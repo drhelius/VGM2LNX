@@ -130,7 +130,6 @@ private:
   std::vector<WriteMikey> mWrites = {};
   Rational mIdealTime{};
   Rational mRealTime{};
-  TimerUpdate mLastTimerUpdate{};
 
 };
 
@@ -163,6 +162,20 @@ std::vector<uint8_t> convert( std::vector<uint8_t> const& plain )
 
 
   Image image;
+  int pendingWait = 0;
+
+  auto scheduleWait = [&]( int samples )
+  {
+    static constexpr int PLAYER_FRAME_SAMPLES = 735;
+
+    pendingWait += samples;
+
+    if ( pendingWait >= PLAYER_FRAME_SAMPLES )
+    {
+      image.wait( pendingWait );
+      pendingWait = 0;
+    }
+  };
 
   for ( size_t i = dataOffset; i < eofOffset; )
   {
@@ -189,23 +202,26 @@ std::vector<uint8_t> convert( std::vector<uint8_t> const& plain )
     {
       int wait = value<uint16_t>( plain, i );
       i += 2;
-      image.wait( wait );
+      scheduleWait( wait );
     }
     else if ( cmd == 0x62 )
     {
-      image.wait( 735 );
+      scheduleWait( 735 );
     }
     else if ( cmd == 0x63 )
     {
-      image.wait( 882 );
+      scheduleWait( 882 );
     }
     else if ( ( cmd >> 4 ) == 0x7 )
     {
       int wait = ( cmd & 0xf ) + 1;
-      image.wait( wait );
+      scheduleWait( wait );
     }
     else if ( cmd == 0x66 )
     {
+      if ( pendingWait > 0 )
+        image.wait( pendingWait );
+
       //silence
       image.writeMikey( 0x20, 0 );
       image.writeMikey( 0x25, 0 );
@@ -265,8 +281,7 @@ void Image::wait( int samples )
   if ( diff > 0 )
   {
     TimerUpdate newTimerUpdate = buf.wait( diff );
-    mRealTime += Rational{ newTimerUpdate.cycles() + mLastTimerUpdate.timer5Cycle(), 1000000 };
-    mLastTimerUpdate = newTimerUpdate;
+    mRealTime += Rational{ newTimerUpdate.cycles(), 1000000 };
   }
 
   for ( auto const& write : mWrites )
@@ -428,7 +443,7 @@ void Image::TempBuffer::commit( bool final )
     mImage.addSector();
 
   mData.clear();
-  mWaiting = false;
+  mWaiting = mWaiting && !final;
 }
 
 TimerUpdate TimerUpdate::create( int64_t cycles )
